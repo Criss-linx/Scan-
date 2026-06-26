@@ -37,7 +37,7 @@ import tempfile
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 INPUT_FILE   = "v4.addrs"   
 OUTPUT_FILE  = "results.csv"
-RATE         = 5000          # packets/sec
+RATE         = 10000          # packets/sec
 WAIT         = 10            # seconds to wait after TX completes for late replies
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -68,13 +68,12 @@ def run_scan(input_file, rate, wait, resume=False):
     else:
         cmd = [
             "masscan",
-            "-iL",  input_file,     
+            "-iL", input_file,
             "--ping",             # ICMP echo requests
             "--rate", str(rate),
             "--wait", str(wait),
             "-oJ", out.name,
         ]
-        cmd[2] = input_file
 
     print(f"Running: {' '.join(cmd)}")
     print("(Press Ctrl-C to pause — scan state saved to paused.conf and can be resumed)")
@@ -91,10 +90,22 @@ def run_scan(input_file, rate, wait, resume=False):
     return out.name
 
 
+def resolve_output_path(output_csv, input_file):
+    if os.path.isabs(output_csv):
+        return output_csv
+
+    input_path = os.path.abspath(input_file)
+    input_dir = os.path.dirname(input_path) or os.getcwd()
+    return os.path.join(input_dir, output_csv)
+
+
 def parse_and_write(json_path, input_file, output_csv):
+    output_csv = resolve_output_path(output_csv, input_file)
+    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+
     print("Reading input IPs …")
     all_ips = set()
-    with open(input_file) as f:
+    with open(input_file, encoding="utf-8") as f:
         for line in f:
             ip = line.strip()
             if ip and not ip.startswith("#"):
@@ -103,24 +114,26 @@ def parse_and_write(json_path, input_file, output_csv):
     print("Parsing masscan results …")
     alive = set()
     try:
-        with open(json_path) as f:
+        with open(json_path, encoding="utf-8") as f:
             raw = f.read().strip()
         if raw:
-            raw = raw.rstrip(",\n") 
+            raw = raw.rstrip(",\n")
             if not raw.startswith("["):
                 raw = "[" + raw + "]"
             records = json.loads(raw)
             for rec in records:
-                alive.add(rec["ip"])
-    except (json.JSONDecodeError, KeyError) as e:
-        print(f"Warning: could not parse masscan JSON ({e}). "
-              "All IPs will be marked 'dead'. Check the raw file: " + json_path)
+                if isinstance(rec, dict) and "ip" in rec:
+                    alive.add(str(rec["ip"]))
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        print(
+            f"Warning: could not parse masscan JSON ({e}). "
+            f"All IPs will be marked 'dead'. Check the raw file: {json_path}"
+        )
 
-    # Write CSV
     print(f"Writing {output_csv} …")
     alive_count = 0
-    dead_count  = 0
-    with open(output_csv, "w", newline="") as f:
+    dead_count = 0
+    with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["ip", "status"])
         for ip in sorted(all_ips, key=lambda x: tuple(int(o) for o in x.split("."))):
@@ -131,21 +144,33 @@ def parse_and_write(json_path, input_file, output_csv):
                 writer.writerow([ip, "dead"])
                 dead_count += 1
 
-    os.unlink(json_path)   
-
     total = alive_count + dead_count
-    print(f"Done!")
+    print("Done!")
     print(f"  Total scanned : {total:,}")
-    print(f"  Alive         : {alive_count:,}  ({alive_count/total*100:.1f}%)")
+    if total:
+        print(f"  Alive         : {alive_count:,}  ({alive_count/total*100:.1f}%)")
+    else:
+        print(f"  Alive         : {alive_count:,} (0.0%)")
     print(f"  Dead          : {dead_count:,}")
     print(f"  Results       → {output_csv}")
+
+    with open(output_csv, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([])
+        writer.writerow(["summary_type", "count", "percentage"])
+        writer.writerow(["Total Scanned", total, "100%"])
+        writer.writerow(["Alive", alive_count, f"{alive_count/total*100:.1f}%" if total else "0.0%"])
+        writer.writerow(["Dead", dead_count, f"{dead_count/total*100:.1f}%" if total else "0.0%"])
+
+    if os.path.exists(json_path):
+        os.unlink(json_path)
 
 
 def main():
     parser = argparse.ArgumentParser(description="ICMP host scanner via masscan")
     parser.add_argument("--input",  default=INPUT_FILE,  help="Input file of IPs (one per line)")
     parser.add_argument("--output", default=OUTPUT_FILE, help="Output CSV file")
-    parser.add_argument("--rate",   default=RATE, type=int, help="Packets per second (default: 1000)")
+    parser.add_argument("--rate",   default=RATE, type=int, help="Packets per second (default: 10000)")
     parser.add_argument("--wait",   default=WAIT, type=int, help="Seconds to wait after TX (default: 10)")
     parser.add_argument("--resume", action="store_true",    help="Resume a previously paused scan")
     args = parser.parse_args()

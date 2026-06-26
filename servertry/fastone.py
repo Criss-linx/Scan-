@@ -6,11 +6,11 @@ from scapy.all import IP, ICMP, sr, conf
 
 # ─── CONFIG ─────────────────────────────────────────────────────────────
 INPUT_FILE  = "v4.addrs"
-OUTPUT_FILE = "results.csv"
+OUTPUT_FILE = "result1.csv"
 
-SEND_SIZE   = 500    # IPs per chunk — smaller = more accurate timeout accounting
-NUM_WORKERS = 14      # parallel sender processes
-TIMEOUT     = 0.5     # seconds to wait after last packet (covers ~1.5s RTT)
+SEND_SIZE   = 5000    # IPs per chunk — smaller = more accurate timeout accounting
+NUM_WORKERS = 9      # parallel sender processes
+TIMEOUT     = 0.3     # seconds to wait after last packet (covers ~1.5s RTT)
 RETRY       = 4      # resend unanswered packets this many times before giving up
 INTER       = 0.009   # seconds between packets — prevents NIC burst drops
 # ────────────────────────────────────────────────────────────────────────
@@ -19,10 +19,9 @@ INTER       = 0.009   # seconds between packets — prevents NIC burst drops
 def ping_chunk(args):
     chunk, chunk_id = args
 
-    conf.use_pcap   = True
-    conf.verb       = 0
+    conf.use_pcap = True
+    conf.verb = 0
 
-   
     icmp_id = chunk_id & 0xFFFF
 
     packets = [IP(dst=ip, ttl=64) / ICMP(id=icmp_id, seq=i)
@@ -52,9 +51,11 @@ def result_writer(queue):
             f.flush()
 
 
-def flush_results(results):
-    for row in results:
-        queue.put(row)
+def make_result_callback(queue):
+    def flush_results(results):
+        for row in results:
+            queue.put(row)
+    return flush_results
 
 
 def file_chunker():
@@ -95,7 +96,7 @@ if __name__ == "__main__":
         task = pool.apply_async(
             ping_chunk,
             ((chunk, i),),
-            callback=flush_results,
+            callback=make_result_callback(queue),
         )
         workers.append(task)
 
